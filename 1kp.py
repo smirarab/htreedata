@@ -78,42 +78,39 @@ def embed_dist(
     return result
 
 
-# In[314]:
+# In[277]:
 
 
-# Read gene trees
-mt = MultiTree("Fig3-genetrees.tre")
+# Read and embed the species trees
+import subprocess
+st = Tree("astral-Fig3-rooted.scored.tre")
+std,ld = st.distance_matrix()
+res = []
+distor = []
+for d in range(2,21):
+    se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True)
+    m,l = se.distance_matrix()
+    with open('se.txt','w') as f:
+        f.write("%d\n%s\n" %(len(l), "\n".join("%s %s" %(l[i],"\t".join(f"{a:.6g}" for a in m[i].tolist())) for i in range(0,len(l)))))
+    subprocess.run(["/Users/smirarab/miniforge3/bin/fastme", "-i", "se.txt"],capture_output=True,text=True,check=True)
+    result = subprocess.run(["compareTrees.missingBranch",  "astral-Fig3-rooted.scored.tre", "se.txt_fastme_tree.nwk"],capture_output=True,text=True,check=True)
+    res.append(result.stdout.split()[2])
+    distor.append(float(sum(sum((m-std)**2))))
+    print(distor[-1],res[-1])
+with open('st-dimensions.txt','w') as f:
+    f.write("Dim Distortion STERR\n%s" %("\n".join("%d %f %s" %(d,distor[d-2],res[d-2]) for d in range(2,21))))
 
 
-# In[318]:
+# In[345]:
 
 
-# Normalize gene tree embeddings to get rid or overal rate variation
-# Skip to do unscaled ...
-
-rates = mt.normalize()
-
-#Visualize rates
-import matplotlib.pyplot as plt
-plt.hist(rates, bins=40) # Convert to numpy array
-plt.title('Histogram of relative gene rates for the plant dataset')
-
-plt.savefig("plantrates.pdf", format='pdf', bbox_inches='tight') #
-
-plt.show()
-
-
-# In[ ]:
-
-
-# Align the species trees to gene trees
+# Embed gene trees and species trees, infer species trees from gene trees and compare to reference
 import torch
 from htree.procrustes import HyperbolicProcrustes
 import numpy as np
 
+# Read species tree
 st = Tree("astral-Fig3-rooted.scored.tre")
-
-stdiam = st.diameter()
 
 # Distance between two sets of embeddings
 def compute_dist(ref,tar):
@@ -121,60 +118,59 @@ def compute_dist(ref,tar):
         ref.to_poincare(ref.points),
         tar.to_poincare(tar.points[:, [tar._labels.index(label) for label in ref._labels]])).tolist()[0]
 
-# Infer a median tree and compared to ASTRAL
-def spterr(refs,d):
+# Infer a median tree and compare it to ASTRAL
+def spterr(refs,d,mm):
     m,l = refs.distance_matrix()
-    with open('dist%d.txt' %d,'w') as f:
+    with open('dist%d%s.txt' %(d,mm),'w') as f:
         f.write("%d\n%s\n" %(len(l), "\n".join("%s %s" %(l[i],"\t".join(f"{a:.6g}" for a in m[i].tolist())) for i in range(0,len(l)))))
-    subprocess.run(["/Users/smirarab/miniforge3/bin/fastme", "-i", "dist.txt"],capture_output=True,text=True,check=True)
-    result = subprocess.run(["compareTrees.missingBranch",  "astral-Fig3-rooted.scored.tre", "dist.txt_fastme_tree.nwk"],capture_output=True,text=True,check=True)
+    subprocess.run(["/Users/smirarab/miniforge3/bin/fastme", "-i", 'dist%d%s.txt' %(d,mm)],capture_output=True,text=True,check=True)
+    result = subprocess.run(["compareTrees.missingBranch",  "astral-Fig3-rooted.scored.tre", "dist%d%s.txt_fastme_tree.nwk" %(d,mm)],capture_output=True,text=True,check=True)
     return result.stdout.split()[2],torch.max(m)
 
-meanres = {}
-for d in range (2,21):
-    meanres[d] = []
+for scaled in [False, True]:
+    # Read gene trees
+    mt = MultiTree("Fig3-genetrees.tre")
 
-    # Embed gene trees and the species tree
-    me = mt.embed(dim=d, geometry='hyperbolic',precise_opt=True)
-    se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True,curvature=me[0].curvature)
+    if scaled:
+        # Normalize gene tree embeddings to get rid or overal rate variation
+        rates = mt.normalize()
 
-    refs = me.reference_embedding(func = torch.nanmean,precise_opt=True)
-    aggerror, diam = spterr(refs,d) 
-    sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
-    meanres[d].append(("mean", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
+        #Visualize rates
+        import matplotlib.pyplot as plt
+        plt.hist(rates, bins=40) # Convert to numpy array
+        plt.title('Histogram of relative gene rates for the plant dataset')
 
-    refs = me.reference_embedding(func = torch.nanmedian,precise_opt=True)
-    aggerror, diam  = spterr(refs,d) 
-    sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
-    meanres[d].append(("median", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
+        plt.savefig("plantrates.pdf", format='pdf', bbox_inches='tight')
 
-    # A Bit of hacking needed for the Gaussian weighting method. 
-    refdist, C, l = mt.distance_matrix(method = "fp")
-    aggerror, diam  = spterr(refs,d) 
-    refs = embed_dist(dim=d, dist=refdist, labels=l, geometry='hyperbolic',precise_opt=True,curvature=me[0].curvature)
-    sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
-    meanres[d].append(("FP", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
+    meanres = {}
+    for d in range (2,21):
+        meanres[d] = []
 
-    print(meanres)
+        # Embed gene trees and the species tree
+        me = mt.embed(dim=d, geometry='hyperbolic',precise_opt=True)
+        se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True,curvature=me[0].curvature)
 
+        refs = me.reference_embedding(func = torch.nanmean,precise_opt=True)
+        aggerror, diam = spterr(refs,d,"mean%s" %("-scaled" if scaled else "-unscaled")) 
+        sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
+        meanres[d].append(("mean", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
 
-# In[317]:
+        refs = me.reference_embedding(func = torch.nanmedian,precise_opt=True)
+        aggerror, diam  = spterr(refs,d,"median%s" %("-scaled" if scaled else "-unscaled")) 
+        sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
+        meanres[d].append(("median", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
 
+        # A Bit of hacking needed for the Gaussian weighting method. 
+        refdist, C, l = mt.distance_matrix(method = "fp")
+        refs = embed_dist(dim=d, dist=refdist, labels=l, geometry='hyperbolic',precise_opt=True,curvature=me[0].curvature)
+        aggerror, diam  = spterr(refs,d,"fp%s" %("-scaled" if scaled else "-unscaled")) 
+        sd = [(aligned,unaligned) for (aligned,unaligned) in zip(compute_dist(refs, HyperbolicProcrustes(se,refs).map(se)),compute_dist(refs,se))]
+        meanres[d].append(("FP", np.mean([sdi[0] for sdi in sd]),np.mean([sdi[1] for sdi in sd]),aggerror))
 
-with open('gt-dimensions-scaled-fullepochs.txt','w') as f:
-    f.write("Dim MeanMethod DistortionUnaligned DistortionAligned STERR\n%s" %("\n".join("%d %s %f %f %s" %(d,t[0],t[2],t[1],t[3]) for d in range(2,21) for t in meanres[d] )))
+        print(meanres)
 
-
-# In[ ]:
-
-
-# Move ahead with dimension 12 
-d = 12
-# Embed gene trees
-me = mt.embed(dim=d, geometry='hyperbolic',precise_opt=True)
-# Read and embed the species trees
-st = Tree("astral-Fig3-rooted.scored.tre")
-se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True,curvature=me[0].curvature)
+    with open('gt-dimensions-%s-fullepochs.txt2' %("scaled" if scaled else "unscaled"),'w') as f:
+        f.write("Dim MeanMethod DistortionUnaligned DistortionAligned STERR\n%s" %("\n".join("%d %s %f %f %s" %(d,t[0],t[2],t[1],t[3]) for d in range(2,21) for t in meanres[d] )))
 
 
 # In[321]:
@@ -183,10 +179,6 @@ se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True,curvature=me[0].curv
 # Align the gene tree embeddings
 import torch
 me.align(func = torch.nanmean, precise_opt = 'accurate')
-
-
-# In[322]:
-
 
 # Save the unaligned gene tree embeddings
 me.save("1KPalignedgenetrees.aligned.embed.pickle")
@@ -216,44 +208,27 @@ def align(me, reference_embedding, **kwargs) -> None:
             model = procrustes.EuclideanProcrustes(embedding, reference_embedding,**filtered_kwargs)
             newembds.append( model.map(embedding) )
 
-
-# In[118]:
-
-
+# Align gene tree embeddings to a given refs embedding
 align(me,refs, precise_opt = 'accurate')
 
-
-# In[119]:
-
-
 # Save the aligned gene tree embeddings
-me.save("1KPalignedgenetrees.embed.pickle")
+me.save("1KPalignedgenetrees.alignedotref.embed.pickle")
 
 
-
-# Read and embed the species trees
-import subprocess
-st = Tree("astral-Fig3-rooted.scored.tre")
-std,ld = st.distance_matrix()
-res = []
-distor = []
-for d in range(2,21):
-    se = st.embed(dim=d, geometry='hyperbolic',precise_opt=True)
-    m,l = se.distance_matrix()
-    with open('se.txt','w') as f:
-        f.write("%d\n%s\n" %(len(l), "\n".join("%s %s" %(l[i],"\t".join(f"{a:.6g}" for a in m[i].tolist())) for i in range(0,len(l)))))
-    subprocess.run(["/Users/smirarab/miniforge3/bin/fastme", "-i", "se.txt"],capture_output=True,text=True,check=True)
-    result = subprocess.run(["compareTrees.missingBranch",  "astral-Fig3-rooted.scored.tre", "se.txt_fastme_tree.nwk"],capture_output=True,text=True,check=True)
-    res.append(result.stdout.split()[2])
-    distor.append(float(sum(sum((m-std)**2))))
-    print(distor[-1],res[-1])
-with open('st-dimensions.txt','w') as f:
-    f.write("Dim Distortion STERR\n%s" %("\n".join("%d %f %s" %(d,distor[d-2],res[d-2]) for d in range(2,21))))
+# In[ ]:
 
 
-# In[278]:
+import torch
+from htree.optimizer import HyperbolicOptimizer
+def hyperbolic_cost_function(points):
+   #A simple cost function that minimizes the squared norm of hyperbolic points (pulling them towards the origin).
+   return torch.sum((points - 1) ** 2)  # Minimize squared norm of all points
+D = d
 
-
-with open('st-dimensions.txt','w') as f:
-    f.write("Dim Distortion STERR\n%s" %("\n".join("%d %f %s" %(d,distor[d-2],res[d-2]) for d in range(2,21))))
+gt = mt[5]
+N = st.contents.num_leaves - gt.contents.num_leaves
+learning_rate = 0.01
+optimizer = HyperbolicOptimizer(hyperbolic_cost_function, D, N, learning_rate=learning_rate)
+optimized_points = optimizer.optimize(epochs=100)
+print("Optimized Points (Adam):", optimized_points)
 
